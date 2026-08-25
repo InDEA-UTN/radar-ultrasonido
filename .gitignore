@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Arduino
+build/
+*.hex
+*.elf
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Editores
+.vscode/
+.idea/
+*.swp
+
+# Datos crudos grandes (los barridos de ejemplo sí se versionan, si son chicos)
+*.log
