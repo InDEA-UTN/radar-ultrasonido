@@ -17,6 +17,7 @@ Thumbs.db
 # Editores
 .vscode/
 .idea/
+.clangd
 *.swp
 
 # Datos crudos grandes (los barridos de ejemplo sí se versionan, si son chicos)
