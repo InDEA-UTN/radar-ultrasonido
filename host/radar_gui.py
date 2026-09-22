@@ -27,7 +27,10 @@ COLOR_BEAM = (140, 255, 190)       # Haz luminoso principal
 COLOR_BEAM_TRAIL = (40, 220, 120)  # Estela de desvanecimiento
 COLOR_ECHO_BRIGHT = (255, 70, 70)  # Eco / obstáculo detectado (rojo brillante con resplandor)
 COLOR_ECHO_GLOW = (255, 140, 40)   # Resplandor naranja de obstáculo
+COLOR_SHADOW_RED = (235, 45, 45)   # Sombra roja proyectada detrás de los obstáculos
+COLOR_SHADOW_RED_EDGE = (255, 80, 80) # Bordes laterales de la sombra roja
 COLOR_TEXT_VALUE = (160, 255, 200) # Valores numéricos destacados
+
 COLOR_TEXT_DIM = (100, 140, 120)   # Texto secundario
 COLOR_STATUS_OK = (60, 240, 120)   # Estado conectado
 COLOR_STATUS_WARN = (255, 180, 50) # Estado reconectando / advertencia
@@ -55,6 +58,7 @@ class RadarGUI:
         self.modelo = modelo or RadarModel(rango_max_mm=1000)
 
         # Superficies auxiliares para transparencias (Alfa)
+        self.sup_sombras = pygame.Surface((self.ancho, self.alto), pygame.SRCALPHA)
         self.sup_barrido = pygame.Surface((self.ancho, self.alto), pygame.SRCALPHA)
         self.sup_ecos = pygame.Surface((self.ancho, self.alto), pygame.SRCALPHA)
 
@@ -95,8 +99,10 @@ class RadarGUI:
                 self.ancho = max(800, evento.w)
                 self.alto = max(550, evento.h)
                 self.pantalla = pygame.display.set_mode((self.ancho, self.alto), pygame.RESIZABLE)
+                self.sup_sombras = pygame.Surface((self.ancho, self.alto), pygame.SRCALPHA)
                 self.sup_barrido = pygame.Surface((self.ancho, self.alto), pygame.SRCALPHA)
                 self.sup_ecos = pygame.Surface((self.ancho, self.alto), pygame.SRCALPHA)
+
 
             elif evento.type == pygame.KEYDOWN:
                 if evento.key == pygame.K_ESCAPE or evento.key == pygame.K_q:
@@ -117,6 +123,7 @@ class RadarGUI:
     def _dibujar(self):
         self.pantalla.fill(COLOR_BG)
 
+
         # Geometría del radar
         ancho_radar = int(self.ancho * 0.72)
         centro_x = ancho_radar // 2
@@ -126,13 +133,16 @@ class RadarGUI:
         # 1. Dibujar Grilla Polar (Arcos concéntricos y radios angulares)
         self._dibujar_grilla_polar(centro_x, centro_y, radio_radar)
 
-        # 2. Dibujar Ecos / Obstáculos detectados con desvanecimiento de fósforo
-        self._dibujar_ecos(centro_x, centro_y, radio_radar)
+        # 2. Dibujar Sombras Proyectadas detrás de los Obstáculos (Efecto Linterna / Oclusión)
+        self._dibujar_sombras(centro_x, centro_y, radio_radar)
 
-        # 3. Dibujar Haz y Estela de Barrido
+        # 3. Dibujar Haz y Estela de Barrido (con bloqueo de rayo al chocar obstáculo)
         self._dibujar_haz_barrido(centro_x, centro_y, radio_radar)
 
-        # 4. Dibujar Panel Lateral de Telemetría e Información
+        # 4. Dibujar Ecos / Superficie Frontal Iluminada de Obstáculos
+        self._dibujar_ecos(centro_x, centro_y, radio_radar)
+
+        # 5. Dibujar Panel Lateral de Telemetría e Información
         self._dibujar_panel_telemetria(ancho_radar)
 
         pygame.display.flip()
@@ -182,47 +192,172 @@ class RadarGUI:
             rect_txt = surf_ang.get_rect(center=(x_txt, y_txt))
             self.pantalla.blit(surf_ang, rect_txt)
 
-    def _dibujar_ecos(self, cx: int, cy: int, radio: int):
-        self.sup_ecos.fill((0, 0, 0, 0))
-        t_ahora = time.time()
-        ecos_activos = self.modelo.obtener_ecos_activos(t_ahora)
+    def _dibujar_sombras(self, cx: int, cy: int, radio: int):
+        """Proyecta sombras radiales rojas completamente uniformes y continuas detrás de los obstáculos."""
 
-        for eco in ecos_activos:
+        self.sup_sombras.fill((0, 0, 0, 0))
+        t_ahora = time.time()
+        ecos_activos = self.modelo.obtener_ecos_suavizados(t_ahora)
+        if not ecos_activos:
+            return
+
+        ecos_ordenados = sorted(ecos_activos, key=lambda e: e.angulo)
+
+        # Agrupar ecos contiguos en clusters para generar una sola silueta continua sin solapamientos
+        clusters = []
+        cluster_actual = []
+        for eco in ecos_ordenados:
             if not eco.es_valida:
                 continue
+            if not cluster_actual:
+                cluster_actual.append(eco)
+            else:
+                # Si el siguiente ángulo está cerca (hasta 3°) y la distancia es consistente
+                if (eco.angulo - cluster_actual[-1].angulo) <= 3 and abs(eco.distancia_mm - cluster_actual[-1].distancia_mm) <= 250:
+                    cluster_actual.append(eco)
+                else:
+                    clusters.append(cluster_actual)
+                    cluster_actual = [eco]
+        if cluster_actual:
+            clusters.append(cluster_actual)
 
-            intensidad = eco.intensidad(t_ahora, self.modelo.persistencia_segundos)
-            x, y = self.modelo.calcular_coordenadas_xy(
-                eco.angulo, eco.distancia_mm, cx, cy, radio
-            )
+        # Dibujar cada sombra como un único polígono sólido uniforme
+        for cluster in clusters:
+            if not cluster:
+                continue
 
-            # Efecto de halo brillante con transparencia
-            alfa_glow = int(140 * intensidad)
-            alfa_core = int(255 * intensidad)
+            intensidad_cluster = max(e.intensidad(t_ahora, self.modelo.persistencia_segundos) for e in cluster)
+            if intensidad_cluster <= 0.02:
+                continue
 
-            # Resplandor exterior
-            pygame.draw.circle(self.sup_ecos, (*COLOR_ECHO_GLOW, alfa_glow), (x, y), 8)
-            # Núcleo del obstáculo
-            pygame.draw.circle(self.sup_ecos, (*COLOR_ECHO_BRIGHT, alfa_core), (x, y), 4)
+            alfa_sombra = int(90 * intensidad_cluster)
+            alfa_borde = int(160 * intensidad_cluster)
+
+            if len(cluster) == 1:
+                eco = cluster[0]
+                delta_ang = 0.9
+                ang_izq = max(0.0, eco.angulo - delta_ang)
+                ang_der = min(180.0, eco.angulo + delta_ang)
+
+                p_f_izq = self.modelo.calcular_coordenadas_xy(ang_izq, eco.distancia_mm, cx, cy, radio)
+                p_f_der = self.modelo.calcular_coordenadas_xy(ang_der, eco.distancia_mm, cx, cy, radio)
+                p_o_der = self.modelo.calcular_coordenadas_xy(ang_der, self.modelo.rango_max_mm, cx, cy, radio)
+                p_o_izq = self.modelo.calcular_coordenadas_xy(ang_izq, self.modelo.rango_max_mm, cx, cy, radio)
+
+                poligono = [p_f_izq, p_f_der, p_o_der, p_o_izq]
+                pygame.draw.polygon(self.sup_sombras, (*COLOR_SHADOW_RED, alfa_sombra), poligono)
+                pygame.draw.line(self.sup_sombras, (*COLOR_SHADOW_RED_EDGE, alfa_borde), p_f_izq, p_o_izq, 1)
+                pygame.draw.line(self.sup_sombras, (*COLOR_SHADOW_RED_EDGE, alfa_borde), p_f_der, p_o_der, 1)
+            else:
+                ang_ini = max(0.0, cluster[0].angulo - 0.5)
+                ang_fin = min(180.0, cluster[-1].angulo + 0.5)
+
+                # 1. Borde frontal que sigue la forma del obstáculo
+                puntos_front = [
+                    self.modelo.calcular_coordenadas_xy(ang_ini, cluster[0].distancia_mm, cx, cy, radio)
+                ]
+                for e in cluster:
+                    puntos_front.append(self.modelo.calcular_coordenadas_xy(e.angulo, e.distancia_mm, cx, cy, radio))
+                puntos_front.append(
+                    self.modelo.calcular_coordenadas_xy(ang_fin, cluster[-1].distancia_mm, cx, cy, radio)
+                )
+
+                # 2. Arco exterior perimetral de retorno
+                puntos_back = [
+                    self.modelo.calcular_coordenadas_xy(ang_fin, self.modelo.rango_max_mm, cx, cy, radio)
+                ]
+                for e in reversed(cluster):
+                    puntos_back.append(self.modelo.calcular_coordenadas_xy(e.angulo, self.modelo.rango_max_mm, cx, cy, radio))
+                puntos_back.append(
+                    self.modelo.calcular_coordenadas_xy(ang_ini, self.modelo.rango_max_mm, cx, cy, radio)
+                )
+
+                # 3. Dibujar polígono continuo unificado (sin líneas internas ni solapes de alfa)
+                poligono_completo = puntos_front + puntos_back
+                pygame.draw.polygon(self.sup_sombras, (*COLOR_SHADOW_RED, alfa_sombra), poligono_completo)
+
+                # 4. Trazar exclusivamente los dos rayos delimitadores externos
+                pygame.draw.line(self.sup_sombras, (*COLOR_SHADOW_RED_EDGE, alfa_borde), puntos_front[0], puntos_back[-1], 1)
+                pygame.draw.line(self.sup_sombras, (*COLOR_SHADOW_RED_EDGE, alfa_borde), puntos_front[-1], puntos_back[0], 1)
+
+        self.pantalla.blit(self.sup_sombras, (0, 0))
+
+    def _dibujar_ecos(self, cx: int, cy: int, radio: int):
+        """Dibuja únicamente la línea frontal limpia de los obstáculos detectados (sin círculos ni puntos)."""
+        self.sup_ecos.fill((0, 0, 0, 0))
+        t_ahora = time.time()
+        ecos_activos = self.modelo.obtener_ecos_suavizados(t_ahora)
+        if not ecos_activos:
+            return
+
+        ecos_ordenados = sorted(ecos_activos, key=lambda e: e.angulo)
+
+        # Agrupar en clusters continuos para trazar la línea frontal de cada obstáculo
+        clusters = []
+        cluster_actual = []
+        for eco in ecos_ordenados:
+            if not eco.es_valida:
+                continue
+            if not cluster_actual:
+                cluster_actual.append(eco)
+            else:
+                if (eco.angulo - cluster_actual[-1].angulo) <= 3 and abs(eco.distancia_mm - cluster_actual[-1].distancia_mm) <= 250:
+                    cluster_actual.append(eco)
+                else:
+                    clusters.append(cluster_actual)
+                    cluster_actual = [eco]
+        if cluster_actual:
+            clusters.append(cluster_actual)
+
+        # Trazar la línea frontal nítida de cada obstáculo (sin círculos ni puntos)
+        for cluster in clusters:
+            intensidad_cluster = max(e.intensidad(t_ahora, self.modelo.persistencia_segundos) for e in cluster)
+            if intensidad_cluster <= 0.02:
+                continue
+
+            alfa_linea = int(240 * intensidad_cluster)
+
+            if len(cluster) >= 2:
+                puntos_linea = [
+                    self.modelo.calcular_coordenadas_xy(e.angulo, e.distancia_mm, cx, cy, radio)
+                    for e in cluster
+                ]
+                pygame.draw.lines(self.sup_ecos, (*COLOR_ECHO_BRIGHT, alfa_linea), False, puntos_linea, 2)
+            elif len(cluster) == 1:
+                eco = cluster[0]
+                p1 = self.modelo.calcular_coordenadas_xy(max(0.0, eco.angulo - 0.8), eco.distancia_mm, cx, cy, radio)
+                p2 = self.modelo.calcular_coordenadas_xy(min(180.0, eco.angulo + 0.8), eco.distancia_mm, cx, cy, radio)
+                pygame.draw.line(self.sup_ecos, (*COLOR_ECHO_BRIGHT, alfa_linea), p1, p2, 2)
 
         self.pantalla.blit(self.sup_ecos, (0, 0))
 
+
     def _dibujar_haz_barrido(self, cx: int, cy: int, radio: int):
+
         self.sup_barrido.fill((0, 0, 0, 0))
         ang_actual = self.modelo.angulo_actual
         direccion = self.modelo.direccion_barrido
 
-        # Estela translúcida detrás del haz (persistencia angular)
+        # Estela translúcida detrás del haz (cono de luz de la linterna)
         ancho_estela = 14  # grados de estela
         for offset in range(ancho_estela):
             ang_estela = ang_actual - (offset * direccion)
             if 0 <= ang_estela <= 180:
-                rad_estela = math.radians(ang_estela)
-                x_dest = int(cx + radio * math.cos(rad_estela))
-                y_dest = int(cy - radio * math.sin(rad_estela))
+                # Si hay un obstáculo en este ángulo, la luz de la linterna se detiene en él
+                eco_en_ang = self.modelo.ecos.get(int(round(ang_estela)))
+                if (
+                    eco_en_ang
+                    and eco_en_ang.es_valida
+                    and self.modelo.rango_min_mm <= eco_en_ang.distancia_mm <= self.modelo.rango_max_mm
+                ):
+                    dist_luz = eco_en_ang.distancia_mm
+                else:
+                    dist_luz = self.modelo.rango_max_mm
 
-                # Opacidad decreciente
-                alfa = int(60 * (1.0 - (offset / ancho_estela)))
+                x_dest, y_dest = self.modelo.calcular_coordenadas_xy(ang_estela, dist_luz, cx, cy, radio)
+
+                # Opacidad decreciente de la luz
+                alfa = int(65 * (1.0 - (offset / ancho_estela)))
                 pygame.draw.line(
                     self.sup_barrido,
                     (*COLOR_BEAM_TRAIL, alfa),
@@ -232,17 +367,37 @@ class RadarGUI:
                 )
 
         # Haz principal luminoso
-        rad_haz = math.radians(ang_actual)
-        x_haz = int(cx + radio * math.cos(rad_haz))
-        y_haz = int(cy - radio * math.sin(rad_haz))
-        pygame.draw.line(self.sup_barrido, COLOR_BEAM, (cx, cy), (x_haz, y_haz), 2)
+        tiene_obstaculo = (
+            self.modelo.ultimo_estado == 0
+            and self.modelo.rango_min_mm <= self.modelo.ultima_distancia_mm <= self.modelo.rango_max_mm
+        )
 
-        # Punto central pivote
+        if tiene_obstaculo:
+            dist_impacto = self.modelo.ultima_distancia_mm
+            x_hit, y_hit = self.modelo.calcular_coordenadas_xy(ang_actual, dist_impacto, cx, cy, radio)
+
+            # 1. Haz iluminado desde el centro hasta el punto de impacto (estilo linterna)
+            pygame.draw.line(self.sup_barrido, COLOR_BEAM, (cx, cy), (x_hit, y_hit), 2)
+
+            # 2. Rayo en zona de sombra (detrás del obstáculo) dibujado en rojo translúcido
+            x_fin, y_fin = self.modelo.calcular_coordenadas_xy(ang_actual, self.modelo.rango_max_mm, cx, cy, radio)
+            pygame.draw.line(self.sup_barrido, (*COLOR_SHADOW_RED, 80), (x_hit, y_hit), (x_fin, y_fin), 1)
+        else:
+            # Haz completo hasta el radio máximo
+
+
+            rad_haz = math.radians(ang_actual)
+            x_haz = int(cx + radio * math.cos(rad_haz))
+            y_haz = int(cy - radio * math.sin(rad_haz))
+            pygame.draw.line(self.sup_barrido, COLOR_BEAM, (cx, cy), (x_haz, y_haz), 2)
+
+        # Punto central pivote (origen de la linterna / sensor)
         pygame.draw.circle(self.pantalla, COLOR_BEAM, (cx, cy), 6)
 
         self.pantalla.blit(self.sup_barrido, (0, 0))
 
     def _dibujar_panel_telemetria(self, x_panel: int):
+
         ancho_panel = self.ancho - x_panel - 20
         rect_panel = pygame.Rect(x_panel, 20, ancho_panel, self.alto - 40)
 
@@ -291,8 +446,15 @@ class RadarGUI:
 
         if self.modelo.ultimo_estado == 0 and self.modelo.ultima_distancia_mm > 0:
             dist_cm = self.modelo.ultima_distancia_mm / 10.0
-            txt_dist_val = f"{dist_cm:5.1f} cm"
-            color_dist = COLOR_TEXT_VALUE
+            if self.modelo.ultima_distancia_mm > self.modelo.rango_max_mm:
+                txt_dist_val = f"{dist_cm:4.1f}cm (>MAX)"
+                color_dist = COLOR_STATUS_WARN
+            elif self.modelo.ultima_distancia_mm < self.modelo.rango_min_mm:
+                txt_dist_val = f"{dist_cm:4.1f}cm (<MIN)"
+                color_dist = COLOR_STATUS_WARN
+            else:
+                txt_dist_val = f"{dist_cm:5.1f} cm"
+                color_dist = COLOR_TEXT_VALUE
         elif self.modelo.ultimo_estado == 1:
             txt_dist_val = "SIN ECO"
             color_dist = COLOR_STATUS_WARN
@@ -307,11 +469,15 @@ class RadarGUI:
         ancho_barra = ancho_panel - 32
         alto_barra = 12
         pygame.draw.rect(self.pantalla, COLOR_GRID_DARK, (margen_x, y_cursor, ancho_barra, alto_barra), border_radius=3)
-        if self.modelo.ultimo_estado == 0 and self.modelo.ultima_distancia_mm > 0:
-            pct = min(1.0, self.modelo.ultima_distancia_mm / float(self.modelo.rango_max_mm))
+        if self.modelo.ultimo_estado == 0 and self.modelo.rango_min_mm <= self.modelo.ultima_distancia_mm <= self.modelo.rango_max_mm:
+            pct = self.modelo.ultima_distancia_mm / float(self.modelo.rango_max_mm)
             w_progreso = int(ancho_barra * pct)
             pygame.draw.rect(self.pantalla, COLOR_ECHO_GLOW, (margen_x, y_cursor, w_progreso, alto_barra), border_radius=3)
+        elif self.modelo.ultimo_estado == 0 and self.modelo.ultima_distancia_mm > self.modelo.rango_max_mm:
+            # Barra completa en color de advertencia por superar el rango máximo configurado
+            pygame.draw.rect(self.pantalla, COLOR_STATUS_WARN, (margen_x, y_cursor, ancho_barra, alto_barra), border_radius=3)
         y_cursor += 30
+
 
         pygame.draw.line(self.pantalla, COLOR_PANEL_BORDER, (margen_x, y_cursor), (x_panel + ancho_panel - 16, y_cursor))
         y_cursor += 15

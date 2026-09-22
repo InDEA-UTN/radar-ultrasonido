@@ -5,11 +5,13 @@ acá el porqué.
 
 ## Estado actual
 
-**Fase 1** — relevamiento y compra de los componentes que faltan.
+**Fase 5 (completada)** — Adquisición integrada y visualización PPI funcionando en vivo y en simulación.  
+Documentación técnica consolidada en **[`sistema.md`](sistema.md)**. En curso: **Fase 6** (soporte mecánico y cierre).
 
 ## Fases
 
 ### Fase 0 — Puesta en marcha *(hecha)*
+
 
 Repositorio creado, planteo del problema escrito, alternativas descritas.
 

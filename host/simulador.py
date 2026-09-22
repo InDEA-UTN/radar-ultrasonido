@@ -64,18 +64,19 @@ class LectorSimulado:
             estado = 1  # Por defecto sin eco
 
             if 40 <= angulo <= 55:
-                # Obstáculo fijo 1 (a ~70 cm / 700 mm)
-                distancia_mm = int(700 + 20 * math.sin(angulo * 0.5))
+                # Obstáculo fijo 1 (a 70 cm / 700 mm)
+                distancia_mm = 700
                 estado = 0
             elif 120 <= angulo <= 145:
-                # Obstáculo fijo 2 (a ~45 cm / 450 mm)
-                distancia_mm = int(450 + 15 * math.cos(angulo * 0.3))
+                # Obstáculo fijo 2 (a 45 cm / 450 mm)
+                distancia_mm = 450
                 estado = 0
             elif 80 <= angulo <= 100:
-                # Obstáculo móvil / dinámico acercándose y alejándose (entre 35 cm y 75 cm)
+                # Obstáculo móvil / dinámico acercándose y alejándose suavemente (entre 35 cm y 75 cm)
                 dist_dinamica = int(550 + 200 * math.sin(t * 1.5))
                 distancia_mm = dist_dinamica
                 estado = 0
+
 
             med = Medicion(
                 angulo=angulo,

@@ -1,15 +1,15 @@
 /*
  * test_servo.ino
- * 
+ *
  * Programa de prueba y calibración para el micro servo SG90.
  * Proyecto: Radar de Ultrasonido (InDEA - UTN FRM)
  * Fase 2: Comprobación de componentes por separado.
- * 
+ *
  * Conexiones SG90:
  *   - Naranja (Señal): Pin D9 (o cualquier pin PWM)
  *   - Rojo (VCC): 5V (fuente externa recomendada o 5V Arduino)
  *   - Marrón/Negro (GND): GND (¡común con Arduino!)
- * 
+ *
  * Modos de uso desde el Monitor Serie (115200 baudios):
  *   - Ingresar un número entre 0 y 180 para mover a ese ángulo exacto.
  *   - 'c' -> Centrar a 90° (ideal para montar/alinear el brazo mecánico).
@@ -24,8 +24,8 @@
 const uint8_t PIN_SERVO = 9;
 
 // Límites de seguridad para evitar forzar los topes mecánicos del SG90
-const int ANGULO_MIN = 0;    // Si zumba en 0, ajustar ej. a 5 o 10
-const int ANGULO_MAX = 180;  // Si zumba en 180, ajustar ej. a 170 o 175
+const int ANGULO_MIN = 0;   // Si zumba en 0, ajustar ej. a 5 o 10
+const int ANGULO_MAX = 180; // Si zumba en 180, ajustar ej. a 170 o 175
 
 Servo servoRadar;
 
@@ -43,7 +43,8 @@ void imprimirMenu() {
   Serial.println(F("  [0 - 180] : Mover al ángulo deseado"));
   Serial.println(F("  'c'       : Centrar a 90 grados"));
   Serial.println(F("  's'       : Iniciar / Detener barrido automático"));
-  Serial.println(F("  'p'       : Prueba rápida por pasos (0, 45, 90, 135, 180)"));
+  Serial.println(
+      F("  'p'       : Prueba rápida por pasos (0, 45, 90, 135, 180)"));
   Serial.println(F("  '+' / '-' : Mover +/- 5 grados"));
   Serial.println(F("==========================================\n"));
 }
@@ -70,39 +71,37 @@ void pruebaPorPasos() {
 }
 
 void procesarComandoSerie() {
-  if (!Serial.available()) return;
+  if (!Serial.available())
+    return;
 
   String entrada = Serial.readStringUntil('\n');
   entrada.trim();
-  if (entrada.length() == 0) return;
+  if (entrada.length() == 0)
+    return;
 
   char primerChar = entrada.charAt(0);
 
   if (primerChar == 'c' || primerChar == 'C') {
     modoBarrido = false;
     moverA(90);
-  } 
-  else if (primerChar == 's' || primerChar == 'S') {
+  } else if (primerChar == 's' || primerChar == 'S') {
     modoBarrido = !modoBarrido;
     if (modoBarrido) {
-      Serial.println(F("-> Barrido automático ACTIVADO. Envíe 's' o cualquier ángulo para detenerlo."));
+      Serial.println(F("-> Barrido automático ACTIVADO. Envíe 's' o cualquier "
+                       "ángulo para detenerlo."));
     } else {
       Serial.println(F("-> Barrido automático DETENIDO."));
     }
-  } 
-  else if (primerChar == 'p' || primerChar == 'P') {
+  } else if (primerChar == 'p' || primerChar == 'P') {
     modoBarrido = false;
     pruebaPorPasos();
-  } 
-  else if (primerChar == '+') {
+  } else if (primerChar == '+') {
     modoBarrido = false;
     moverA(anguloActual + 5);
-  } 
-  else if (primerChar == '-') {
+  } else if (primerChar == '-') {
     modoBarrido = false;
     moverA(anguloActual - 5);
-  } 
-  else {
+  } else {
     // Intentar interpretar como número entero
     int angulo = entrada.toInt();
     if (entrada == "0" || angulo > 0) {
@@ -116,7 +115,8 @@ void procesarComandoSerie() {
 }
 
 void actualizarBarridoAutomatico() {
-  if (!modoBarrido) return;
+  if (!modoBarrido)
+    return;
 
   unsigned long ahora = millis();
   if (ahora - ultimoPasoBarrido >= INTERVALO_BARRIDO_MS) {
@@ -136,7 +136,8 @@ void actualizarBarridoAutomatico() {
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial && millis() < 2000); // Espera en placas nativas USB
+  while (!Serial && millis() < 2000)
+    ; // Espera en placas nativas USB
 
   servoRadar.attach(PIN_SERVO);
   moverA(90); // Posición inicial de reposo al centro

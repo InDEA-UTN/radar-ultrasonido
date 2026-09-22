@@ -20,6 +20,7 @@ class PuntoEco:
     distancia_mm: int
     estado: int
     timestamp: float
+    direccion: int = 1   # +1 si el barrido iba hacia 180°, -1 si iba hacia 0°
 
     @property
     def distancia_cm(self) -> float:
@@ -36,7 +37,9 @@ class PuntoEco:
             return 1.0
         if dt >= duracion_persistencia_s:
             return 0.0
-        return max(0.0, 1.0 - (dt / duracion_persistencia_s))
+        factor = 1.0 - (dt / duracion_persistencia_s)
+        return max(0.0, factor ** 1.2)
+
 
 
 class RadarModel:
@@ -44,8 +47,9 @@ class RadarModel:
         self,
         rango_max_mm: int = 1000,
         rango_min_mm: int = 40,
-        persistencia_segundos: float = 3.5
+        persistencia_segundos: float = 8.5
     ):
+
         self.rango_max_mm = rango_max_mm
         self.rango_min_mm = rango_min_mm
         self.persistencia_segundos = persistencia_segundos
@@ -73,28 +77,82 @@ class RadarModel:
         self.ultimo_estado = m.estado
         self.total_mediciones_recibidas += 1
 
-        # Guardar o actualizar eco en este ángulo
+        # Guardar o actualizar eco en este ángulo con dirección del barrido
         self.ecos[angulo_clamped] = PuntoEco(
             angulo=angulo_clamped,
             distancia_mm=m.distancia_mm,
             estado=m.estado,
-            timestamp=m.timestamp
+            timestamp=m.timestamp,
+            direccion=self.direccion_barrido
         )
+
 
     def limpiar(self):
         """Reinicia todos los ecos almacenados."""
         self.ecos.clear()
 
+    def obtener_ecos_suavizados(self, tiempo_actual: Optional[float] = None, ventana: int = 3) -> List[PuntoEco]:
+        """
+        Devuelve los ecos activos con la distancia suavizada mediante una media móvil ponderada
+        sobre los `ventana` vecinos angulares a cada lado. Útil para reducir el 'serrado' causado
+        por las reflexiones oblicuas del sensor HC-SR04 en superficies planas.
+        Los datos originales en self.ecos NO se modifican.
+        """
+        if tiempo_actual is None:
+            tiempo_actual = time.time()
+
+        activos = self.obtener_ecos_activos(tiempo_actual)
+        if not activos:
+            return []
+
+        # Índice rápido de distancias crudas por ángulo
+        dist_por_angulo: Dict[int, int] = {
+            eco.angulo: eco.distancia_mm
+            for eco in self.ecos.values()
+            if eco.es_valida and self.rango_min_mm <= eco.distancia_mm <= self.rango_max_mm
+        }
+
+        resultado = []
+        for eco in activos:
+            # Recolectar vecinos dentro de la ventana angular
+            pesos_total = 0.0
+            suma_ponderada = 0.0
+            for delta in range(-ventana, ventana + 1):
+                ang_vecino = eco.angulo + delta
+                if ang_vecino in dist_por_angulo:
+                    # Peso triangular: mayor en el centro, decrece linealmente
+                    peso = ventana + 1 - abs(delta)
+                    suma_ponderada += dist_por_angulo[ang_vecino] * peso
+                    pesos_total += peso
+
+            dist_suavizada = int(suma_ponderada / pesos_total) if pesos_total > 0 else eco.distancia_mm
+
+            # Crear copia del eco con la distancia suavizada
+            resultado.append(PuntoEco(
+                angulo=eco.angulo,
+                distancia_mm=dist_suavizada,
+                estado=eco.estado,
+                timestamp=eco.timestamp,
+                direccion=eco.direccion
+            ))
+
+        return resultado
+
     def obtener_ecos_activos(self, tiempo_actual: Optional[float] = None) -> List[PuntoEco]:
-        """Devuelve los ecos con eco válido que aún no se hayan desvanecido por completo."""
+        """Devuelve los ecos válidos dentro del rango observable que aún no se hayan desvanecido."""
         if tiempo_actual is None:
             tiempo_actual = time.time()
 
         activos = []
         for eco in self.ecos.values():
-            if eco.es_valida and eco.intensidad(tiempo_actual, self.persistencia_segundos) > 0.01:
+            if (
+                eco.es_valida
+                and self.rango_min_mm <= eco.distancia_mm <= self.rango_max_mm
+                and eco.intensidad(tiempo_actual, self.persistencia_segundos) > 0.01
+            ):
                 activos.append(eco)
         return activos
+
 
     def calcular_coordenadas_xy(
         self,
@@ -108,9 +166,7 @@ class RadarModel:
         Convierte coordenadas polares (ángulo, distancia) a píxeles de pantalla (X, Y).
         0° apunta hacia la derecha (+X), 90° hacia arriba (-Y), 180° hacia la izquierda (-X).
         """
-        # Limitar al radio máximo
-        dist_clamp = min(distancia_mm, self.rango_max_mm)
-        fraccion_radio = dist_clamp / float(self.rango_max_mm)
+        fraccion_radio = distancia_mm / float(self.rango_max_mm)
         r = fraccion_radio * radio_px
 
         rad = math.radians(angulo_grados)
@@ -118,3 +174,4 @@ class RadarModel:
         x = int(centro_x + r * math.cos(rad))
         y = int(centro_y - r * math.sin(rad))
         return x, y
+

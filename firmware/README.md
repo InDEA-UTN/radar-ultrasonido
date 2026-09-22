@@ -14,14 +14,19 @@ Antes de integrar la adquisición completa, se encuentran los sketches de prueba
 
 ## Firmware integrado (Fase 4)
 
-Qué va acá depende de la [decisión de arquitectura](../docs/alternativas.md):
+El sketch unificado que coordina el barrido del servo con la adquisición ultrasónica:
 
-- **Opciones A y C** → un sketch de Arduino (`radar/radar.ino`). Nota práctica: la biblioteca
-  `Servo` del Arduino usa el temporizador 1 y `pulseIn()` bloquea mientras espera el eco. Funcionan
-  juntos, pero si aparecen mediciones inconsistentes vale la pena mirar ahí antes que en otro lado;
-  la biblioteca `NewPing` evita parte del problema.
-- **Opción B** → un módulo de Python sobre `pigpio` (no `RPi.GPIO`, por lo explicado en las
-  alternativas), corriendo en la Raspberry.
+| Directorio | Descripción | Conexión típica |
+|---|---|---|
+| [`radar/`](radar/radar.ino) | Barrido coordinado ($0^\circ \leftrightarrow 180^\circ$) + medición y envío de telemetría por puerto serie (`115200` baud) | `Servo Signal` -> Pin 9, `TRIG` -> Pin 11, `ECHO` -> Pin 12 |
 
-Cuando esté definido el firmware final, este README detallará el proceso de compilación y carga.
+### Instrucciones de carga y prueba:
+1. Abrir [`firmware/radar/radar.ino`](radar/radar.ino) en Arduino IDE.
+2. Seleccionar la placa (ej. *Arduino Uno*) y el puerto serie correspondiente.
+3. Compilar y subir el programa al microcontrolador.
+4. Cerrar el Monitor Serie de Arduino IDE (para no bloquear el puerto) y ejecutar la interfaz gráfica en la computadora:
+   ```bash
+   python3 host/main.py
+   ```
+
 
