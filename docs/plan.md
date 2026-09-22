@@ -50,7 +50,7 @@ Primero funciona con datos grabados, después en vivo.
 
 ### Fase 6 — Cierre
 
-Soporte mecánico definitivo, documentación de uso, fotos y un video corto del radar funcionando.
+Soporte mecánico definitivo, armado de una maqueta pequeña para demostración pública del funcionamiento del dispositivo, documentación de uso, fotos y un video corto del radar funcionando.
 
 ## Ideas para después
 
