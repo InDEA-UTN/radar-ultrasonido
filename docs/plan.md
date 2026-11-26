@@ -5,11 +5,13 @@ acá el porqué.
 
 ## Estado actual
 
-**Fase 1** — relevamiento y compra de los componentes que faltan.
+**Fase 5 (completada)** — Adquisición integrada y visualización PPI funcionando en vivo y en simulación.  
+Documentación técnica consolidada en **[`sistema.md`](sistema.md)**. En curso: **Fase 6** (soporte mecánico y cierre).
 
 ## Fases
 
 ### Fase 0 — Puesta en marcha *(hecha)*
+
 
 Repositorio creado, planteo del problema escrito, alternativas descritas.
 
@@ -48,7 +50,7 @@ Primero funciona con datos grabados, después en vivo.
 
 ### Fase 6 — Cierre
 
-Soporte mecánico definitivo, documentación de uso, fotos y un video corto del radar funcionando.
+Soporte mecánico definitivo, armado de una maqueta pequeña para demostración pública del funcionamiento del dispositivo, documentación de uso, fotos y un video corto del radar funcionando.
 
 ## Ideas para después
 
