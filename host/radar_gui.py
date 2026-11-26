@@ -28,7 +28,7 @@ COLOR_BEAM_TRAIL = (40, 220, 120)  # Estela de desvanecimiento
 COLOR_ECHO_BRIGHT = (255, 70, 70)  # Eco / obstáculo detectado (rojo brillante con resplandor)
 COLOR_ECHO_GLOW = (255, 140, 40)   # Resplandor naranja de obstáculo
 COLOR_SHADOW_RED = (235, 45, 45)   # Sombra roja proyectada detrás de los obstáculos
-COLOR_SHADOW_RED_EDGE = (255, 80, 80) # Bordes laterales de la sombra roja
+COLOR_SHADOW_RED_EDGE = (245, 80, 80) # Bordes laterales de la sombra roja
 COLOR_TEXT_VALUE = (160, 255, 200) # Valores numéricos destacados
 
 COLOR_TEXT_DIM = (100, 140, 120)   # Texto secundario
@@ -70,6 +70,8 @@ class RadarGUI:
 
         self.pausado = False
         self.ejecutando = True
+        # Modo pico: muestra solo el ángulo de máxima incidencia (mínima distancia) por cluster
+        self.modo_pico = False
 
     def ejecutar(self):
         """Bucle principal de la interfaz gráfica."""
@@ -119,6 +121,24 @@ class RadarGUI:
                     # Disminuir rango máximo en pasos de 250 mm
                     if self.modelo.rango_max_mm > 250:
                         self.modelo.rango_max_mm -= 250
+                elif evento.key == pygame.K_b:
+                    # [B] Iniciar/Finalizar calibración de fondo (background)
+                    if not self.modelo.calibrando:
+                        self.modelo.iniciar_calibracion()
+                        self.modelo.limpiar()
+                    else:
+                        self.modelo.finalizar_calibracion()
+                        self.modelo.limpiar()
+                elif evento.key == pygame.K_n:
+                    # [N] Borrar calibración de fondo (volver a ver todo)
+                    self.modelo.limpiar_calibracion()
+                    self.modelo.limpiar()
+                elif evento.key == pygame.K_l:
+                    # [L] Alternar escala lineal / raíz cuadrada (exagera primer plano)
+                    self.modelo.escala_logaritmica = not self.modelo.escala_logaritmica
+                elif evento.key == pygame.K_p:
+                    # [P] Alternar modo pico: solo muestra el ángulo central real del objeto
+                    self.modo_pico = not self.modo_pico
 
     def _dibujar(self):
         self.pantalla.fill(COLOR_BG)
@@ -134,7 +154,8 @@ class RadarGUI:
         self._dibujar_grilla_polar(centro_x, centro_y, radio_radar)
 
         # 2. Dibujar Sombras Proyectadas detrás de los Obstáculos (Efecto Linterna / Oclusión)
-        self._dibujar_sombras(centro_x, centro_y, radio_radar)
+        if not self.modo_pico:
+            self._dibujar_sombras(centro_x, centro_y, radio_radar)
 
         # 3. Dibujar Haz y Estela de Barrido (con bloqueo de rayo al chocar obstáculo)
         self._dibujar_haz_barrido(centro_x, centro_y, radio_radar)
@@ -192,6 +213,85 @@ class RadarGUI:
             rect_txt = surf_ang.get_rect(center=(x_txt, y_txt))
             self.pantalla.blit(surf_ang, rect_txt)
 
+    def _agrupar_ecos_en_clusters(
+        self,
+        ecos_activos: list[PuntoEco],
+        max_delta_ang: int = 3,
+        max_delta_dist_mm: int = 60,
+    ) -> list[list[PuntoEco]]:
+        """Agrupa ecos válidos contiguos en clústeres según cercanía angular y de distancia."""
+        ecos_ordenados = sorted(ecos_activos, key=lambda e: e.angulo)
+        clusters: list[list[PuntoEco]] = []
+        cluster_actual: list[PuntoEco] = []
+
+        for eco in ecos_ordenados:
+            if not eco.es_valida:
+                continue
+            if not cluster_actual:
+                cluster_actual.append(eco)
+            elif (
+                (eco.angulo - cluster_actual[-1].angulo) <= max_delta_ang
+                and abs(eco.distancia_mm - cluster_actual[-1].distancia_mm) <= max_delta_dist_mm
+            ):
+                cluster_actual.append(eco)
+            else:
+                clusters.append(cluster_actual)
+                cluster_actual = [eco]
+
+        if cluster_actual:
+            clusters.append(cluster_actual)
+        return clusters
+
+    def _detectar_picos_cluster(
+        self,
+        cluster: list[PuntoEco],
+        ventana_ang: int = 6,
+        prominencia_mm: int = 15,
+        min_sep_grados: int = 18,
+    ) -> list[PuntoEco]:
+        """
+        Detecta múltiples mínimos locales de distancia dentro de un clúster.
+        Permite distinguir varios objetos cuyos arcos ultrasónicos se superpusieron.
+        """
+        if len(cluster) <= 2:
+            return [min(cluster, key=lambda e: e.distancia_mm)]
+
+        ang_ini = cluster[0].angulo
+        ang_fin = cluster[-1].angulo
+        candidatos: list[PuntoEco] = []
+
+        for eco in cluster:
+            # 1. Mínimo local en su vecindad angular
+            vecinos = [v for v in cluster if abs(v.angulo - eco.angulo) <= ventana_ang]
+            if any(v.distancia_mm < eco.distancia_mm for v in vecinos):
+                continue
+
+            # 2. Prominencia: debe haber una subida hacia un valle entre objetos
+            izq = [v.distancia_mm for v in cluster if eco.angulo - 15 <= v.angulo < eco.angulo]
+            der = [v.distancia_mm for v in cluster if eco.angulo < v.angulo <= eco.angulo + 15]
+            sube_izq = bool(izq) and (max(izq) - eco.distancia_mm) >= prominencia_mm
+            sube_der = bool(der) and (max(der) - eco.distancia_mm) >= prominencia_mm
+
+            cerca_borde_izq = (eco.angulo - ang_ini) <= ventana_ang
+            cerca_borde_der = (ang_fin - eco.angulo) <= ventana_ang
+
+            if (sube_izq and sube_der) or (cerca_borde_izq and sube_der) or (cerca_borde_der and sube_izq):
+                candidatos.append(eco)
+
+        # Garantizar al menos el mínimo global del clúster
+        min_global = min(cluster, key=lambda e: e.distancia_mm)
+        if min_global not in candidatos:
+            candidatos.append(min_global)
+
+        # 3. Supresión de no-mínimos: priorizar los más cercanos y exigir separación mínima
+        candidatos.sort(key=lambda e: e.distancia_mm)
+        seleccionados: list[PuntoEco] = []
+        for cand in candidatos:
+            if all(abs(cand.angulo - sel.angulo) >= min_sep_grados for sel in seleccionados):
+                seleccionados.append(cand)
+
+        return sorted(seleccionados, key=lambda e: e.angulo)
+
     def _dibujar_sombras(self, cx: int, cy: int, radio: int):
         """Proyecta sombras radiales rojas completamente uniformes y continuas detrás de los obstáculos."""
 
@@ -201,25 +301,7 @@ class RadarGUI:
         if not ecos_activos:
             return
 
-        ecos_ordenados = sorted(ecos_activos, key=lambda e: e.angulo)
-
-        # Agrupar ecos contiguos en clusters para generar una sola silueta continua sin solapamientos
-        clusters = []
-        cluster_actual = []
-        for eco in ecos_ordenados:
-            if not eco.es_valida:
-                continue
-            if not cluster_actual:
-                cluster_actual.append(eco)
-            else:
-                # Si el siguiente ángulo está cerca (hasta 3°) y la distancia es consistente
-                if (eco.angulo - cluster_actual[-1].angulo) <= 3 and abs(eco.distancia_mm - cluster_actual[-1].distancia_mm) <= 250:
-                    cluster_actual.append(eco)
-                else:
-                    clusters.append(cluster_actual)
-                    cluster_actual = [eco]
-        if cluster_actual:
-            clusters.append(cluster_actual)
+        clusters = self._agrupar_ecos_en_clusters(ecos_activos)
 
         # Dibujar cada sombra como un único polígono sólido uniforme
         for cluster in clusters:
@@ -283,51 +365,90 @@ class RadarGUI:
         self.pantalla.blit(self.sup_sombras, (0, 0))
 
     def _dibujar_ecos(self, cx: int, cy: int, radio: int):
-        """Dibuja únicamente la línea frontal limpia de los obstáculos detectados (sin círculos ni puntos)."""
+        """Dibuja la zona iluminada (sensor→obstáculo) y la línea frontal del obstáculo."""
         self.sup_ecos.fill((0, 0, 0, 0))
         t_ahora = time.time()
         ecos_activos = self.modelo.obtener_ecos_suavizados(t_ahora)
         if not ecos_activos:
             return
 
-        ecos_ordenados = sorted(ecos_activos, key=lambda e: e.angulo)
+        clusters = self._agrupar_ecos_en_clusters(ecos_activos)
 
-        # Agrupar en clusters continuos para trazar la línea frontal de cada obstáculo
-        clusters = []
-        cluster_actual = []
-        for eco in ecos_ordenados:
-            if not eco.es_valida:
-                continue
-            if not cluster_actual:
-                cluster_actual.append(eco)
-            else:
-                if (eco.angulo - cluster_actual[-1].angulo) <= 3 and abs(eco.distancia_mm - cluster_actual[-1].distancia_mm) <= 250:
-                    cluster_actual.append(eco)
-                else:
-                    clusters.append(cluster_actual)
-                    cluster_actual = [eco]
-        if cluster_actual:
-            clusters.append(cluster_actual)
+        if self.modo_pico:
+            picos_globales: list[tuple[PuntoEco, int, int]] = []
+            for cluster in clusters:
+                if len(cluster) < 3:
+                    continue
+                intensidad_cluster = max(e.intensidad(t_ahora, self.modelo.persistencia_segundos) for e in cluster)
+                if intensidad_cluster <= 0.02:
+                    continue
+                alfa_linea = int(255 * intensidad_cluster)
+                alfa_relleno = int(55 * intensidad_cluster)
+                for eco_pico in self._detectar_picos_cluster(cluster):
+                    picos_globales.append((eco_pico, alfa_linea, alfa_relleno))
 
-        # Trazar la línea frontal nítida de cada obstáculo (sin círculos ni puntos)
+            # Supresión global entre clústeres cercanos (evita picos duplicados en bordes rotos)
+            picos_globales.sort(key=lambda item: item[0].distancia_mm)
+            picos_filtrados: list[tuple[PuntoEco, int, int]] = []
+            for item in picos_globales:
+                if all(abs(item[0].angulo - sel[0].angulo) >= 18 for sel in picos_filtrados):
+                    picos_filtrados.append(item)
+
+            r_cruz = 7
+            for eco_pico, alfa_linea, alfa_relleno in picos_filtrados:
+                p_pico = self.modelo.calcular_coordenadas_xy(eco_pico.angulo, eco_pico.distancia_mm, cx, cy, radio)
+                pygame.draw.line(self.sup_ecos, (*COLOR_BEAM_TRAIL, alfa_relleno * 2), (cx, cy), p_pico, 1)
+
+                pygame.draw.line(self.sup_ecos, (*COLOR_ECHO_BRIGHT, alfa_linea),
+                                 (p_pico[0] - r_cruz, p_pico[1]), (p_pico[0] + r_cruz, p_pico[1]), 2)
+                pygame.draw.line(self.sup_ecos, (*COLOR_ECHO_BRIGHT, alfa_linea),
+                                 (p_pico[0], p_pico[1] - r_cruz), (p_pico[0], p_pico[1] + r_cruz), 2)
+                pygame.draw.circle(self.sup_ecos, (*COLOR_ECHO_GLOW, int(alfa_linea * 0.7)), p_pico, r_cruz + 4, 2)
+
+                dist_cm = eco_pico.distancia_mm / 10.0
+                lbl = self.fuente_micro.render(f"{dist_cm:.1f}cm", True, (*COLOR_ECHO_BRIGHT, alfa_linea))
+                self.sup_ecos.blit(lbl, (p_pico[0] + r_cruz + 4, p_pico[1] - 7))
+
+            self.pantalla.blit(self.sup_ecos, (0, 0))
+            return
+
         for cluster in clusters:
             intensidad_cluster = max(e.intensidad(t_ahora, self.modelo.persistencia_segundos) for e in cluster)
             if intensidad_cluster <= 0.02:
                 continue
 
-            alfa_linea = int(240 * intensidad_cluster)
+            alfa_linea   = int(255 * intensidad_cluster)
+            alfa_relleno = int(55  * intensidad_cluster)
 
+            # === MODO NORMAL: arco completo del cluster ===
+            # Relleno zona libre (centro → frente del obstáculo)
+            puntos_frente = [
+                self.modelo.calcular_coordenadas_xy(e.angulo, e.distancia_mm, cx, cy, radio)
+                for e in cluster
+            ]
             if len(cluster) >= 2:
-                puntos_linea = [
-                    self.modelo.calcular_coordenadas_xy(e.angulo, e.distancia_mm, cx, cy, radio)
-                    for e in cluster
-                ]
-                pygame.draw.lines(self.sup_ecos, (*COLOR_ECHO_BRIGHT, alfa_linea), False, puntos_linea, 2)
-            elif len(cluster) == 1:
+                ang_ini = max(0.0,   cluster[0].angulo  - 0.5)
+                ang_fin = min(180.0, cluster[-1].angulo + 0.5)
+                p_borde_ini = self.modelo.calcular_coordenadas_xy(ang_ini, cluster[0].distancia_mm,  cx, cy, radio)
+                p_borde_fin = self.modelo.calcular_coordenadas_xy(ang_fin, cluster[-1].distancia_mm, cx, cy, radio)
+                poligono_libre = [(cx, cy), p_borde_ini] + puntos_frente + [p_borde_fin]
+            else:
                 eco = cluster[0]
-                p1 = self.modelo.calcular_coordenadas_xy(max(0.0, eco.angulo - 0.8), eco.distancia_mm, cx, cy, radio)
-                p2 = self.modelo.calcular_coordenadas_xy(min(180.0, eco.angulo + 0.8), eco.distancia_mm, cx, cy, radio)
-                pygame.draw.line(self.sup_ecos, (*COLOR_ECHO_BRIGHT, alfa_linea), p1, p2, 2)
+                p1 = self.modelo.calcular_coordenadas_xy(max(0.0,   eco.angulo - 1.5), eco.distancia_mm, cx, cy, radio)
+                p2 = self.modelo.calcular_coordenadas_xy(min(180.0, eco.angulo + 1.5), eco.distancia_mm, cx, cy, radio)
+                poligono_libre = [(cx, cy), p1, p2]
+
+            COLOR_LIBRE = (60, 220, 130)
+            pygame.draw.polygon(self.sup_ecos, (*COLOR_LIBRE, alfa_relleno), poligono_libre)
+
+            # Línea frontal del cluster
+            if len(cluster) >= 2:
+                pygame.draw.lines(self.sup_ecos, (*COLOR_ECHO_BRIGHT, alfa_linea), False, puntos_frente, 3)
+            else:
+                eco = cluster[0]
+                p1 = self.modelo.calcular_coordenadas_xy(max(0.0,   eco.angulo - 1.5), eco.distancia_mm, cx, cy, radio)
+                p2 = self.modelo.calcular_coordenadas_xy(min(180.0, eco.angulo + 1.5), eco.distancia_mm, cx, cy, radio)
+                pygame.draw.line(self.sup_ecos, (*COLOR_ECHO_BRIGHT, alfa_linea), p1, p2, 3)
 
         self.pantalla.blit(self.sup_ecos, (0, 0))
 
@@ -338,23 +459,14 @@ class RadarGUI:
         ang_actual = self.modelo.angulo_actual
         direccion = self.modelo.direccion_barrido
 
-        # Estela translúcida detrás del haz (cono de luz de la linterna)
+        # Estela translúcida detrás del haz hasta el borde exterior
         ancho_estela = 14  # grados de estela
         for offset in range(ancho_estela):
             ang_estela = ang_actual - (offset * direccion)
             if 0 <= ang_estela <= 180:
-                # Si hay un obstáculo en este ángulo, la luz de la linterna se detiene en él
-                eco_en_ang = self.modelo.ecos.get(int(round(ang_estela)))
-                if (
-                    eco_en_ang
-                    and eco_en_ang.es_valida
-                    and self.modelo.rango_min_mm <= eco_en_ang.distancia_mm <= self.modelo.rango_max_mm
-                ):
-                    dist_luz = eco_en_ang.distancia_mm
-                else:
-                    dist_luz = self.modelo.rango_max_mm
-
-                x_dest, y_dest = self.modelo.calcular_coordenadas_xy(ang_estela, dist_luz, cx, cy, radio)
+                x_dest, y_dest = self.modelo.calcular_coordenadas_xy(
+                    ang_estela, self.modelo.rango_max_mm, cx, cy, radio
+                )
 
                 # Opacidad decreciente de la luz
                 alfa = int(65 * (1.0 - (offset / ancho_estela)))
@@ -366,30 +478,11 @@ class RadarGUI:
                     3
                 )
 
-        # Haz principal luminoso
-        tiene_obstaculo = (
-            self.modelo.ultimo_estado == 0
-            and self.modelo.rango_min_mm <= self.modelo.ultima_distancia_mm <= self.modelo.rango_max_mm
-        )
-
-        if tiene_obstaculo:
-            dist_impacto = self.modelo.ultima_distancia_mm
-            x_hit, y_hit = self.modelo.calcular_coordenadas_xy(ang_actual, dist_impacto, cx, cy, radio)
-
-            # 1. Haz iluminado desde el centro hasta el punto de impacto (estilo linterna)
-            pygame.draw.line(self.sup_barrido, COLOR_BEAM, (cx, cy), (x_hit, y_hit), 2)
-
-            # 2. Rayo en zona de sombra (detrás del obstáculo) dibujado en rojo translúcido
-            x_fin, y_fin = self.modelo.calcular_coordenadas_xy(ang_actual, self.modelo.rango_max_mm, cx, cy, radio)
-            pygame.draw.line(self.sup_barrido, (*COLOR_SHADOW_RED, 80), (x_hit, y_hit), (x_fin, y_fin), 1)
-        else:
-            # Haz completo hasta el radio máximo
-
-
-            rad_haz = math.radians(ang_actual)
-            x_haz = int(cx + radio * math.cos(rad_haz))
-            y_haz = int(cy - radio * math.sin(rad_haz))
-            pygame.draw.line(self.sup_barrido, COLOR_BEAM, (cx, cy), (x_haz, y_haz), 2)
+        # Haz principal luminoso completo hasta el radio máximo
+        rad_haz = math.radians(ang_actual)
+        x_haz = int(cx + radio * math.cos(rad_haz))
+        y_haz = int(cy - radio * math.sin(rad_haz))
+        pygame.draw.line(self.sup_barrido, COLOR_BEAM, (cx, cy), (x_haz, y_haz), 2)
 
         # Punto central pivote (origen de la linterna / sensor)
         pygame.draw.circle(self.pantalla, COLOR_BEAM, (cx, cy), 6)
@@ -486,7 +579,38 @@ class RadarGUI:
         self.pantalla.blit(self.fuente_chica.render(f"RANGO MÁX: {self.modelo.rango_max_mm / 1000.0:.1f} m", True, COLOR_TEXT_DIM), (margen_x, y_cursor))
         y_cursor += 20
         self.pantalla.blit(self.fuente_chica.render(f"TOTAL MEDS: {self.modelo.total_mediciones_recibidas}", True, COLOR_TEXT_DIM), (margen_x, y_cursor))
-        y_cursor += 35
+        y_cursor += 20
+
+        # Estado de calibración de fondo
+        angulos_cal = len(self.modelo.fondo_mm)
+        if self.modelo.calibrando:
+            ang_acum = len(self.modelo._cal_acum)
+            txt_cal = f"CAL FONDO: {ang_acum}/180°..."
+            color_cal = COLOR_STATUS_WARN
+        elif angulos_cal > 0:
+            txt_cal = f"FONDO: {angulos_cal} pts ✓"
+            color_cal = COLOR_STATUS_OK
+        else:
+            txt_cal = "SIN FONDO CALIB."
+            color_cal = COLOR_TEXT_DIM
+        self.pantalla.blit(self.fuente_chica.render(txt_cal, True, color_cal), (margen_x, y_cursor))
+        y_cursor += 20
+
+        # Margen de fondo activo
+        if angulos_cal > 0 or self.modelo.calibrando:
+            txt_margen = f"MARGEN FONDO: {self.modelo.margen_fondo_mm} mm"
+            self.pantalla.blit(self.fuente_micro.render(txt_margen, True, COLOR_TEXT_DIM), (margen_x, y_cursor))
+            y_cursor += 18
+        # Escala visual activa
+        txt_escala = "ESCALA: √ (1er plano)" if self.modelo.escala_logaritmica else "ESCALA: Lineal"
+        color_escala = COLOR_STATUS_WARN if self.modelo.escala_logaritmica else COLOR_TEXT_DIM
+        self.pantalla.blit(self.fuente_micro.render(txt_escala, True, color_escala), (margen_x, y_cursor))
+        y_cursor += 18
+        # Modo pico activo
+        txt_pico = "MODO: PICO (ángulo central)" if self.modo_pico else "MODO: Arco completo"
+        color_pico = COLOR_ECHO_BRIGHT if self.modo_pico else COLOR_TEXT_DIM
+        self.pantalla.blit(self.fuente_micro.render(txt_pico, True, color_pico), (margen_x, y_cursor))
+        y_cursor += 5
 
         # Controles y atajos de teclado
         pygame.draw.line(self.pantalla, COLOR_PANEL_BORDER, (margen_x, y_cursor), (x_panel + ancho_panel - 16, y_cursor))
@@ -498,5 +622,13 @@ class RadarGUI:
         self.pantalla.blit(self.fuente_micro.render("[R]       Limpiar ecos", True, COLOR_TEXT_DIM), (margen_x, y_cursor))
         y_cursor += 18
         self.pantalla.blit(self.fuente_micro.render("[+/-]     Ajustar rango máx", True, COLOR_TEXT_DIM), (margen_x, y_cursor))
+        y_cursor += 18
+        self.pantalla.blit(self.fuente_micro.render("[B]       Calibrar fondo (vacío→B→B)", True, COLOR_STATUS_WARN), (margen_x, y_cursor))
+        y_cursor += 18
+        self.pantalla.blit(self.fuente_micro.render("[N]       Borrar calibración fondo", True, COLOR_TEXT_DIM), (margen_x, y_cursor))
+        y_cursor += 18
+        self.pantalla.blit(self.fuente_micro.render("[L]       Escala lineal / √ primer plano", True, COLOR_TEXT_DIM), (margen_x, y_cursor))
+        y_cursor += 18
+        self.pantalla.blit(self.fuente_micro.render("[P]       Modo pico / arco completo", True, COLOR_TEXT_DIM), (margen_x, y_cursor))
         y_cursor += 18
         self.pantalla.blit(self.fuente_micro.render("[ESC / Q] Salir", True, COLOR_TEXT_DIM), (margen_x, y_cursor))

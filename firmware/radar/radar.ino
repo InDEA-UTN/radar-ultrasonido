@@ -43,6 +43,8 @@ const unsigned long TIEMPO_ASENTAMIENTO_MS = 25;
 // Tiempo de guarda adicional para disipar ecos residuales (~60ms totales por
 // ciclo)
 const unsigned long TIEMPO_ENTRE_DISPAROS_MS = 35;
+// Pausa corta entre las 3 muestras de la mediana para disipar ecos inmediatos
+const unsigned long TIEMPO_ENTRE_MUESTRAS_MS = 12;
 
 // ==========================================
 // Parámetros del Sensor HC-SR04
@@ -94,14 +96,54 @@ void medirDistancia(int &distancia_mm, int &estado) {
     distancia_mm = 0;
     estado = 1;
   } else {
-    // Cálculo a 20°C: distancia_mm = (duracion_us * 10) / 58
-    distancia_mm = (duracion_us * 10) / 58;
+    // Cálculo a 20°C con aritmética 32-bit para evitar desbordamiento de int (16-bit en AVR)
+    // duracion_us * 10 puede llegar a 250.000 → supera int de 16 bits (máx 32.767)
+    unsigned long dist_calc = (duracion_us * 10UL) / 58UL;
 
-    if (distancia_mm < DISTANCIA_MIN_MM || distancia_mm > DISTANCIA_MAX_MM) {
+    if (dist_calc < DISTANCIA_MIN_MM || dist_calc > DISTANCIA_MAX_MM) {
+      distancia_mm = (int)constrain(dist_calc, 0, 32767);
       estado = 1; // Fuera del rango detectable útil
     } else {
+      distancia_mm = (int)dist_calc;
       estado = 0; // Medición válida
     }
+  }
+}
+
+/**
+ * Toma 3 disparos consecutivos en el mismo ángulo y calcula la mediana
+ * para descartar picos erróneos o rebotes aislados.
+ * Si menos de 2 disparos son válidos, se considera sin eco (estado = 1).
+ */
+void medirDistanciaMediana(int &distancia_mm, int &estado) {
+  int validas[3];
+  int n = 0;
+
+  for (int i = 0; i < 3; i++) {
+    int d = 0;
+    int est = 1;
+    medirDistancia(d, est);
+    if (est == 0) {
+      validas[n++] = d;
+    }
+    if (i < 2) {
+      delay(TIEMPO_ENTRE_MUESTRAS_MS);
+    }
+  }
+
+  if (n == 3) {
+    // Ordenar 3 elementos para obtener la mediana exacta
+    if (validas[0] > validas[1]) { int t = validas[0]; validas[0] = validas[1]; validas[1] = t; }
+    if (validas[1] > validas[2]) { int t = validas[1]; validas[1] = validas[2]; validas[2] = t; }
+    if (validas[0] > validas[1]) { int t = validas[0]; validas[0] = validas[1]; validas[1] = t; }
+    distancia_mm = validas[1];
+    estado = 0;
+  } else if (n == 2) {
+    distancia_mm = (validas[0] + validas[1]) / 2;
+    estado = 0;
+  } else {
+    distancia_mm = 0;
+    estado = 1;
   }
 }
 
@@ -174,10 +216,10 @@ void loop() {
   // 3. Esperar el asentamiento mecánico del servo antes de medir
   delay(TIEMPO_ASENTAMIENTO_MS);
 
-  // 4. Medir distancia ultrasónica
+  // 4. Medir distancia ultrasónica (mediana de 3 disparos)
   int distancia_mm = 0;
   int estado = 0;
-  medirDistancia(distancia_mm, estado);
+  medirDistanciaMediana(distancia_mm, estado);
 
   // 5. Emitir trama por el puerto serie siguiendo el protocolo:
   // <angulo>,<distancia_mm>,<estado>
